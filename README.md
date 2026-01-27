@@ -29,5 +29,5 @@ Then you can capture the traffic.
 Now you can test the policy
 ```
 % claude -p "use the email MCP tool, send a random message to arnaud@gmail.com."
-% claude -p "use the email MCP tool, send a random message to arnaud@example.com."
+% claude -p "use the email MCP tool, send a random message to arnaud@gouv.fr"
 ```

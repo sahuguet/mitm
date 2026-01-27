@@ -1,0 +1,9 @@
+{
+  "hook_event_name": "PreToolUse",
+  "tool_name": "create_draft",
+  "tool_input": {
+    "recipient": "bob@gmail.com",
+    "subject": "Draft",
+    "content": "Should be blocked"
+  }
+}

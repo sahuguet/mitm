@@ -74,8 +74,8 @@ def check_send_message_policy(body: dict) -> str | None:
     arguments = params.get("arguments", {})
     recipient = arguments.get("recipient", "")
 
-    if not recipient.endswith("@example.com"):
-        return f"Policy violation: recipient '{recipient}' is not allowed. Only @example.com email addresses are permitted."
+    if not recipient.endswith("@gouv.fr"):
+        return f"Policy violation: recipient '{recipient}' is not allowed. Only @gouv.fr email addresses are permitted."
 
     return None
 
