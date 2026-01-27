@@ -1,0 +1,9 @@
+{
+  "hook_event_name": "PreToolUse",
+  "tool_name": "send_message",
+  "tool_input": {
+    "recipient": "alice@gouv.fr",
+    "subject": "Hello",
+    "content": "Hi Alice!"
+  }
+}
