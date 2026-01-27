@@ -1,0 +1,13 @@
+{
+  "session_id": "79b70c01-118c-4e97-be33-ea6caba6bf4d",
+  "transcript_path": "/Users/sahuguet/.claude/projects/-Users-sahuguet-Dev-GitHub-mitm/79b70c01-118c-4e97-be33-ea6caba6bf4d.jsonl",
+  "cwd": "/Users/sahuguet/Dev/GitHub/mitm",
+  "permission_mode": "default",
+  "hook_event_name": "PreToolUse",
+  "tool_name": "Bash",
+  "tool_input": {
+    "command": "ls -la",
+    "description": "List all files in current directory"
+  },
+  "tool_use_id": "toolu_01JemG29yRt7gKS5nv4cZDcH"
+}
