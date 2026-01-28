@@ -2,6 +2,10 @@
 
 import json
 import logging
+import os
+import subprocess
+import urllib.error
+import urllib.request
 from datetime import datetime
 
 from mitmproxy import http
@@ -35,6 +39,18 @@ MCP_METHODS = {
     "roots/list",
 }
 
+# --- OPA / Rego policy configuration ---
+SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
+POLICY_PATH = os.environ.get(
+    "MCP_POLICY_PATH",
+    os.path.join(SCRIPT_DIR, "tool_call_examples", "mcp_policy.rego"),
+)
+OPA_MODE = os.environ.get("MCP_OPA_MODE", "cli")          # "cli" or "server"
+OPA_URL = os.environ.get(
+    "MCP_OPA_URL", "http://localhost:8181/v1/data/pretool/decision"
+)
+POLICY_FAIL_MODE = os.environ.get("MCP_POLICY_FAIL_MODE", "closed")  # "closed" or "open"
+
 
 def is_mcp_traffic(content: bytes) -> bool:
     """Check if the content appears to be MCP JSON-RPC traffic."""
@@ -59,25 +75,117 @@ def is_mcp_traffic(content: bytes) -> bool:
     return False
 
 
-def check_send_message_policy(body: dict) -> str | None:
-    """Check if a send_message call violates the email domain policy.
+def build_opa_input(body: dict) -> dict | None:
+    """Transform an MCP JSON-RPC tools/call body into OPA input format.
 
-    Returns an error message if policy is violated, None if allowed.
+    Returns {"tool_name": ..., "tool_input": ...} or None for non-tools/call requests.
     """
     if body.get("method") != "tools/call":
         return None
 
     params = body.get("params", {})
-    if params.get("name") != "send_message":
+    return {
+        "tool_name": params.get("name", ""),
+        "tool_input": params.get("arguments", {}),
+    }
+
+
+def evaluate_policy_cli(opa_input: dict) -> dict:
+    """Evaluate OPA policy via the opa CLI.
+
+    Runs: opa eval -I -d <policy> --format raw 'data.pretool.decision'
+    with the input JSON piped on stdin.
+
+    Returns the parsed decision dict.
+    Raises RuntimeError on failure.
+    """
+    cmd = [
+        "opa", "eval",
+        "-I",
+        "-d", POLICY_PATH,
+        "--format", "raw",
+        "data.pretool.decision",
+    ]
+    try:
+        result = subprocess.run(
+            cmd,
+            input=json.dumps(opa_input),
+            capture_output=True,
+            text=True,
+            timeout=5,
+        )
+    except FileNotFoundError:
+        raise RuntimeError("opa binary not found on PATH")
+    except subprocess.TimeoutExpired:
+        raise RuntimeError("opa eval timed out after 5s")
+
+    if result.returncode != 0:
+        raise RuntimeError(f"opa eval failed (rc={result.returncode}): {result.stderr.strip()}")
+
+    try:
+        return json.loads(result.stdout)
+    except json.JSONDecodeError as exc:
+        raise RuntimeError(f"Failed to parse opa output: {exc}")
+
+
+def evaluate_policy_server(opa_input: dict) -> dict:
+    """Evaluate OPA policy via the OPA REST API.
+
+    POSTs {"input": opa_input} to OPA_URL.
+
+    Returns the parsed decision dict.
+    Raises RuntimeError on failure.
+    """
+    payload = json.dumps({"input": opa_input}).encode()
+    req = urllib.request.Request(
+        OPA_URL,
+        data=payload,
+        headers={"Content-Type": "application/json"},
+        method="POST",
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=5) as resp:
+            resp_body = json.loads(resp.read())
+    except urllib.error.URLError as exc:
+        raise RuntimeError(f"OPA server request failed: {exc}")
+    except json.JSONDecodeError as exc:
+        raise RuntimeError(f"Failed to parse OPA server response: {exc}")
+
+    # The OPA REST API wraps the result under a "result" key.
+    return resp_body.get("result", resp_body)
+
+
+def check_policy(body: dict) -> str | None:
+    """Evaluate OPA/Rego policy for an MCP request.
+
+    Returns an error message string on deny, or None on allow.
+    """
+    opa_input = build_opa_input(body)
+    if opa_input is None:
+        return None  # Not a tools/call request -- nothing to check.
+
+    try:
+        if OPA_MODE == "server":
+            decision = evaluate_policy_server(opa_input)
+        else:
+            decision = evaluate_policy_cli(opa_input)
+    except RuntimeError as exc:
+        if POLICY_FAIL_MODE == "open":
+            print(f"[OPA] Policy evaluation error (fail-open): {exc}")
+            return None
+        return f"Policy evaluation error (fail-closed): {exc}"
+
+    hook_output = decision.get("hookSpecificOutput", {})
+    permission = hook_output.get("permissionDecision", "deny")
+
+    if permission == "allow":
         return None
 
-    arguments = params.get("arguments", {})
-    recipient = arguments.get("recipient", "")
-
-    if not recipient.endswith("@gouv.fr"):
-        return f"Policy violation: recipient '{recipient}' is not allowed. Only @gouv.fr email addresses are permitted."
-
-    return None
+    reason = hook_output.get(
+        "permissionDecisionReason",
+        "Request denied by policy.",
+    )
+    return f"Policy violation: {reason}"
 
 
 class MCPLogger:
@@ -85,6 +193,15 @@ class MCPLogger:
 
     def __init__(self):
         self.request_count = 0
+        # Startup validation and config logging
+        print(f"[OPA] Policy mode: {OPA_MODE}")
+        print(f"[OPA] Fail mode: {POLICY_FAIL_MODE}")
+        if OPA_MODE == "cli":
+            print(f"[OPA] Policy file: {POLICY_PATH}")
+            if not os.path.isfile(POLICY_PATH):
+                print(f"[OPA] WARNING: Policy file not found: {POLICY_PATH}")
+        else:
+            print(f"[OPA] Server URL: {OPA_URL}")
 
     def client_connected(self, client) -> None:
         """Suppress client connect messages."""
@@ -102,10 +219,10 @@ class MCPLogger:
         self.request_count += 1
         timestamp = datetime.now().isoformat()
 
-        # Check policy for send_message
+        # Check OPA/Rego policy for tool calls
         try:
             body = json.loads(flow.request.content)
-            policy_error = check_send_message_policy(body)
+            policy_error = check_policy(body)
             if policy_error:
                 print(f"\n{'!'*60}")
                 print(f"[{timestamp}] POLICY VIOLATION - REQUEST BLOCKED")
