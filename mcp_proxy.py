@@ -216,6 +216,11 @@ class MCPLogger:
         if not is_mcp_traffic(flow.request.content):
             return  # Let non-MCP traffic pass through silently
 
+        for name, value in flow.request.headers.items():
+            print(f"  {name}: {value}")
+
+        username = flow.request.headers['x-user-name']
+
         self.request_count += 1
         timestamp = datetime.now().isoformat()
 
@@ -225,7 +230,7 @@ class MCPLogger:
             policy_error = check_policy(body)
             if policy_error:
                 print(f"\n{'!'*60}")
-                print(f"[{timestamp}] POLICY VIOLATION - REQUEST BLOCKED")
+                print(f"[{timestamp}] POLICY VIOLATION - REQUEST BLOCKED for {username}")
                 print(f"{'!'*60}")
                 print(policy_error)
 
